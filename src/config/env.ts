@@ -1,3 +1,9 @@
+import path from "path";
+import dotenv from "dotenv";
+
+// Explicitly load server/.env regardless of where the process is started from
+dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
+
 // Centralised env validation — fail fast if required vars are missing
 const required = ["MONGO_URI", "JWT_SECRET", "REFRESH_TOKEN_SECRET"] as const;
 
