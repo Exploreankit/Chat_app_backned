@@ -1,8 +1,9 @@
 import { Server, Socket } from "socket.io";
 import jwt from "jsonwebtoken";
-import User from "../models/User";
-import Message from "../models/Message";
-import Conversation from "../models/Conversation";
+import User from "../models/User.model";
+import Message from "../models/Message.model";
+import Conversation from "../models/Conversation.model";
+import { env } from "../config/env";
 import type { IUser } from "../types";
 
 interface JwtPayload {
@@ -17,7 +18,7 @@ interface AuthSocket extends Socket {
 const onlineUsers = new Map<string, Set<string>>();
 
 export const setupSocket = (io: Server): void => {
-  // Auth middleware
+  // ── Auth middleware ────────────────────────────────────────────────────────
   io.use(async (socket, next) => {
     try {
       const token =
@@ -26,7 +27,7 @@ export const setupSocket = (io: Server): void => {
 
       if (!token) return next(new Error("Authentication error"));
 
-      const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as JwtPayload;
+      const decoded = jwt.verify(token, env.jwtSecret) as JwtPayload;
       const user = await User.findById(decoded.id).select("-password");
       if (!user) return next(new Error("User not found"));
 
@@ -71,7 +72,7 @@ export const setupSocket = (io: Server): void => {
           const conversation = await Conversation.findOne({
             _id: conversationId,
             participants: userId,
-          });
+          }).populate("participants", "-password");
           if (!conversation) return;
 
           const message = await Message.create({
@@ -85,12 +86,36 @@ export const setupSocket = (io: Server): void => {
           await message.populate("sender", "username avatar");
           if (replyTo) await message.populate("replyTo");
 
-          await Conversation.findByIdAndUpdate(conversationId, {
-            lastMessage: message._id,
-            updatedAt: new Date(),
-          });
+          const updatedConversation = await Conversation.findByIdAndUpdate(
+            conversationId,
+            { lastMessage: message._id, updatedAt: new Date() },
+            { new: true }
+          )
+            .populate("participants", "-password")
+            .populate({
+              path: "lastMessage",
+              populate: { path: "sender", select: "username avatar" },
+            });
+
+          // Ensure all participants' sockets are in the room
+          const participantIds = conversation.participants.map((p: any) =>
+            p._id.toString()
+          );
+
+          for (const participantId of participantIds) {
+            const participantSockets = onlineUsers.get(participantId);
+            if (participantSockets) {
+              for (const socketId of participantSockets) {
+                const participantSocket = io.sockets.sockets.get(socketId);
+                if (participantSocket) participantSocket.join(conversationId);
+              }
+            }
+          }
 
           io.to(conversationId).emit("message:new", { message });
+          io.to(conversationId).emit("conversation:updated", {
+            conversation: updatedConversation,
+          });
         } catch (err) {
           socket.emit("error", { message: (err as Error).message });
         }
@@ -187,6 +212,38 @@ export const setupSocket = (io: Server): void => {
 
     socket.on("conversation:join", (conversationId: string) => {
       socket.join(conversationId);
+    });
+
+    socket.on("conversation:created", async (data: { conversationId: string }) => {
+      try {
+        const conversation = await Conversation.findById(data.conversationId)
+          .populate("participants", "-password")
+          .populate({
+            path: "lastMessage",
+            populate: { path: "sender", select: "username avatar" },
+          });
+
+        if (!conversation) return;
+
+        const participantIds = conversation.participants.map((p: any) =>
+          p._id.toString()
+        );
+
+        for (const participantId of participantIds) {
+          const participantSockets = onlineUsers.get(participantId);
+          if (participantSockets) {
+            for (const socketId of participantSockets) {
+              const participantSocket = io.sockets.sockets.get(socketId);
+              if (participantSocket) {
+                participantSocket.join(data.conversationId);
+                participantSocket.emit("conversation:new", { conversation });
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error("conversation:created error:", err);
+      }
     });
 
     // ── DISCONNECT ───────────────────────────────────────────────────────────
