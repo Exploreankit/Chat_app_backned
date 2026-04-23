@@ -1,8 +1,17 @@
 import path from "path";
 import dotenv from "dotenv";
 
-// Explicitly load server/.env regardless of where the process is started from
-dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
+// Walk up from cwd to find server/.env — works whether you run from
+// the repo root or from inside the server/ folder
+const candidates = [
+  path.resolve(process.cwd(), "server/.env"), // running from repo root
+  path.resolve(process.cwd(), ".env"),         // running from server/
+];
+
+for (const p of candidates) {
+  const result = dotenv.config({ path: p });
+  if (!result.error) break;
+}
 
 // Centralised env validation — fail fast if required vars are missing
 const required = ["MONGO_URI", "JWT_SECRET", "REFRESH_TOKEN_SECRET"] as const;
